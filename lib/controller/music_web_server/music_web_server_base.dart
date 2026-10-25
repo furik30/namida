@@ -93,6 +93,9 @@ abstract class MusicWebServer {
   Duration? get _playbackProgressInterval => null;
   Future<_ListensReportResult> _reportListens(List<_ServerListen> listens) async => _ListensReportResult.rejected;
 
+  Future<bool> setFavorite(String id, bool isFavorite) async => false;
+  Future<List<String>?> fetchStarredSongIds() async => null;
+
   /// the original file, never transcoded.
   Future<_ServerFileSource?> _getOriginalFileSource(String id) async {
     final details = await getStreamUrl(id);

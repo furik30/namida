@@ -233,6 +233,7 @@ class PlaylistController extends PlaylistManager<TrackWithDate, Track, SortEntry
     final res = super.toggleTrackFavourite(
       TrackWithDate(dateAdded: currentTimeMS, track: track),
     );
+    ServerFavoritesReporter.inst.onFavoriteToggled(track, res);
     if (refreshNotification) {
       final currentItem = Player.inst.currentItem.value;
       if (currentItem is Selectable && currentItem.track == track) {

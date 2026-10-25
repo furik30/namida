@@ -272,3 +272,120 @@ enum _ListensReportResult {
 }
 
 typedef _ServerListen = ({String id, int dateMS});
+
+class ServerFavoritesReporter {
+  static final inst = ServerFavoritesReporter._();
+  ServerFavoritesReporter._();
+
+  static const _kRequestTimeout = Duration(seconds: 15);
+
+  late final _pendingFuture = _readPendingFile();
+  bool _isFileWithPending = false;
+  bool _isFlushing = false;
+  bool _shouldFlushAgain = false;
+  bool _isWaitingForConnection = false;
+
+  Future<void> onFavoriteToggled(Track track, bool isFavorite) async {
+    if (!track.isNetwork) return;
+    final id = MusicWebServer.baseUrlToId(track.path);
+    if (id == null) return;
+    final dir = DirectoryIndexServer.parseFromEncodedUrlPath(track.path);
+    final serverKey = dir.toDbKey();
+    final pending = await _pendingFuture;
+    final serverActions = pending[serverKey] ??= <String, bool>{};
+    serverActions[id] = isFavorite;
+    await _savePending(pending);
+    await _flushAll();
+  }
+
+  Future<void> _flushAll() async {
+    if (_isFlushing) {
+      _shouldFlushAgain = true;
+      return;
+    }
+    _isFlushing = true;
+    try {
+      final pending = await _pendingFuture;
+      do {
+        _shouldFlushAgain = false;
+        final serverKeys = pending.keys.toFixedList();
+        for (final serverKey in serverKeys) {
+          await _flushServer(serverKey, pending);
+        }
+        await _savePending(pending);
+      } while (_shouldFlushAgain);
+    } finally {
+      _isFlushing = false;
+    }
+  }
+
+  Future<void> _flushServer(String serverKey, Map<String, Map<String, bool>> pending) async {
+    final dir = DirectoryIndexServer.parseFromEncodedUrlPath(serverKey);
+    final server = dir.toWebServer();
+    if (server == null) {
+      if (!settings.directoriesToScan.value.contains(dir)) pending.remove(serverKey);
+      return;
+    }
+    final actions = pending[serverKey];
+    if (actions == null || actions.isEmpty) return;
+
+    final entries = actions.entries.toFixedList();
+    for (final e in entries) {
+      final id = e.key;
+      final isFav = e.value;
+      try {
+        final ok = await server.setFavorite(id, isFav).timeout(_kRequestTimeout);
+        if (ok) {
+          actions.remove(id);
+        } else {
+          _retryOnConnectionRestored();
+          return;
+        }
+      } catch (_) {
+        _retryOnConnectionRestored();
+        return;
+      }
+    }
+  }
+
+  void _retryOnConnectionRestored() {
+    if (_isWaitingForConnection) return;
+    _isWaitingForConnection = true;
+    ConnectivityController.inst.registerOnConnectionRestored(_onConnectionRestored);
+  }
+
+  void _onConnectionRestored() {
+    _isWaitingForConnection = false;
+    _flushAll();
+  }
+
+  Future<Map<String, Map<String, bool>>> _readPendingFile() async {
+    final pending = <String, Map<String, bool>>{};
+    final json = await File(AppPaths.SERVERS_PENDING_FAVORITES).readAsJson();
+    if (json is Map) {
+      for (final e in json.entries) {
+        try {
+          final serverKey = e.key as String;
+          final actions = (e.value as Map).cast<String, bool>();
+          pending[serverKey] = Map<String, bool>.from(actions);
+        } catch (_) {}
+      }
+    }
+    _isFileWithPending = pending.isNotEmpty;
+    return pending;
+  }
+
+  Future<void> _savePending(Map<String, Map<String, bool>> pending) async {
+    pending.removeWhere((_, actions) => actions.isEmpty);
+    final hasPending = pending.isNotEmpty;
+    if (!hasPending && !_isFileWithPending) return;
+    final file = File(AppPaths.SERVERS_PENDING_FAVORITES);
+    if (hasPending) {
+      await file.writeAsJson(pending);
+    } else {
+      await file.tryDeleting();
+    }
+    _isFileWithPending = hasPending;
+  }
+}
+

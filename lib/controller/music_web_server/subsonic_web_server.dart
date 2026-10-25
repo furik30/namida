@@ -107,6 +107,42 @@ class _SubsonicWebServer extends MusicWebServer {
     }
   }
 
+  @override
+  Future<bool> setFavorite(String id, bool isFavorite) async {
+    final client = _client;
+    if (client == null) return false;
+    try {
+      final endpoint = isFavorite ? '/rest/star' : '/rest/unstar';
+      final res = await client.get<Map<String, dynamic>>(
+        endpoint,
+        queryParameters: {'id': id},
+      );
+      final body = res.data?['subsonic-response'] as Map?;
+      final status = body?['status'] as String?;
+      return status == 'ok';
+    } catch (_) {
+      return false;
+    }
+  }
+
+  @override
+  Future<List<String>?> fetchStarredSongIds() async {
+    final client = _client;
+    if (client == null) return null;
+    try {
+      final res = await client.get<Map<String, dynamic>>(
+        '/rest/getStarred2',
+        queryParameters: {'f': 'json'},
+      );
+      final body = res.data?['subsonic-response'] as Map?;
+      final starred = body?['starred2'] as Map?;
+      final songs = (starred?['song'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+      return songs.map((s) => s['id']?.toString() ?? '').where((id) => id.isNotEmpty).toList();
+    } catch (_) {
+      return null;
+    }
+  }
+
   static final _cachedArtworksForAlbumIds = <String, Completer<Uint8List>>{};
 
   @override
@@ -300,6 +336,31 @@ class _SubsonicWebServer extends MusicWebServer {
     await for (final trExt in stream) {
       callback(trExt);
     }
+
+    try {
+      final starredIds = await fetchStarredSongIds();
+      if (starredIds != null && starredIds.isNotEmpty) {
+        final serverBase = authDetails.dir.toDbKey();
+        final serverUri = Uri.parse(serverBase);
+        final starredPaths = starredIds.map((id) => _serverTrackPath(serverUri, id)).toSet();
+        
+        final allTracks = Indexer.inst.allTracksMappedByPath;
+        final tracksToFav = <TrackWithDate>[];
+        final now = currentTimeMS;
+        for (final path in starredPaths) {
+          final tr = allTracks[path];
+          if (tr != null && !PlaylistController.inst.favouritesPlaylist.isSubItemFavourite(tr)) {
+            tracksToFav.add(TrackWithDate(dateAdded: now, track: tr));
+          }
+        }
+        if (tracksToFav.isNotEmpty) {
+          await PlaylistController.inst.importTracksToPlaylist(
+            PlaylistController.inst.favouritesPlaylist.value,
+            tracksToFav,
+          );
+        }
+      }
+    } catch (_) {}
   }
 
   Future<List<AlbumModel>> _fetchAllAlbums(SubsonicApi api) async {
